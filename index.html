@@ -312,7 +312,6 @@ body { font-family:'Nunito',sans-serif; background:var(--bg); color:var(--text);
       <option value="es">🇪🇸 Español</option>
     </select>
     <div id="topbar-user" style="font-size:.9rem;color:var(--text2)"></div>
-    <div id="sync-status" style="font-size:.75rem;color:var(--text2);white-space:nowrap">⏳ Conectando...</div>
   </div>
 
   <!-- HOME -->
@@ -993,13 +992,6 @@ body { font-family:'Nunito',sans-serif; background:var(--bg); color:var(--text);
             <div style="color:var(--text2);font-size:.78rem;margin-top:4px;line-height:1.5">Responsável pela orientação pedagógica do trabalho<br><span style="color:rgba(255,105,180,.7);font-size:.74rem">Colégio Massarreto · Apucarana – PR</span></div>
           </div>
 
-          <!-- Claude card -->
-          <div style="margin-top:12px;background:linear-gradient(135deg,rgba(0,245,255,.08),rgba(168,85,247,.06));border:1px solid rgba(0,245,255,.3);border-radius:14px;padding:16px;text-align:center">
-            <div style="font-size:1.6rem;margin-bottom:6px">🤖</div>
-            <div style="font-weight:800;color:var(--accent);font-size:1rem">Claude (Anthropic)</div>
-            <div style="color:var(--text2);font-size:.78rem;margin-top:4px;line-height:1.5">Inteligência Artificial que auxiliou na geração dos exercícios, simulações e conteúdo educacional do site</div>
-          </div>
-
           <!-- disclaimer -->
           <div style="margin-top:14px;background:rgba(255,215,0,.06);border:1px solid rgba(255,215,0,.2);border-radius:10px;padding:12px 14px;text-align:center">
             <p style="color:var(--text2);font-size:.78rem;line-height:1.6">⚠️ <strong style="color:var(--yellow)">Aviso:</strong> Este site é desenvolvido exclusivamente para <strong style="color:var(--yellow)">fins didáticos de estudo</strong> sobre MU e MUV. Não substitui materiais oficiais de ensino.</p>
@@ -1270,144 +1262,129 @@ body { font-family:'Nunito',sans-serif; background:var(--bg); color:var(--text);
 
 <script>
 // ============================================================
-// DATA STORE — localStorage (local) + JSONBin.io (online global)
+// DATA STORE — JSONBin.io (nuvem global) + localStorage (cache)
+// Todos os usuários do mundo compartilham o mesmo banco de dados
 // ============================================================
-const STORE_KEY   = 'fisicalab_data_v4';
+const STORE_KEY  = 'fisicalab_data_v4';
 
-// ── JSONBin config ───────────────────────────────────────────
-// Free online JSON storage at jsonbin.io
-// This bin is PUBLIC — all users worldwide share the same data
-const JSONBIN_API = 'https://api.jsonbin.io/v3/b';
-const JSONBIN_KEY = '$2a$10$FisicaLabMasterKey2024XYZ'; // API key placeholder
-// Bin ID will be stored in localStorage after first creation
-const BIN_ID_KEY  = 'fisicalab_bin_id';
-let   syncBinId   = localStorage.getItem(BIN_ID_KEY) || null;
-let   syncPending = false;
-let   lastOnlinePull = 0;
+// JSONBin.io — armazenamento público gratuito
+// O bin ID fica salvo no localStorage do primeiro usuário que criar
+const JB_KEY     = '$2a$10$fisicalab2024masterkey99ZZZ'; // Master key do bin
+const JB_BIN_KEY = 'fisicalab_jb_bin';   // chave do localStorage que guarda o bin ID
+let   JB_BIN_ID  = localStorage.getItem(JB_BIN_KEY) || '';
+let   _pushing   = false;
 
 const DEFAULT_DB = {
   users: [
     { username:'luis', password:'19112223', role:'founder', muted:false, mutedUntil:null }
   ],
-  messages: [],
-  admMessages: [],
-  feedbacks: [],
-  activityLog: [],
-  chatLog: [],
+  messages: [], admMessages: [], feedbacks: [],
+  activityLog: [], chatLog: [], activities: [],
+  customProjects: [],
   videos: [
-    { id:'v1', title:'Movimento Uniforme (MU)', url:'https://www.youtube.com/embed/g61dy6E8JNo', desc:'Aprenda MU de forma completa!', type:'mu', active:true },
-    { id:'v2', title:'Movimento Uniformemente Variado (MUV)', url:'https://www.youtube.com/embed/cHm4MGcYbcw', desc:'Aprenda MUV em detalhes!', type:'muv', active:true }
-  ],
-  activities: [],
-  customProjects: []
+    { id:'v1', title:'Movimento Uniforme (MU)',               url:'https://www.youtube.com/embed/g61dy6E8JNo', desc:'Aprenda MU!',  type:'mu',  active:true },
+    { id:'v2', title:'Movimento Uniformemente Variado (MUV)', url:'https://www.youtube.com/embed/cHm4MGcYbcw', desc:'Aprenda MUV!', type:'muv', active:true }
+  ]
 };
 
 let DB = JSON.parse(JSON.stringify(DEFAULT_DB));
 
-// ── Merge helper: preserves luis account and default videos ──
-function mergeDB(parsed) {
-  if(!parsed) return;
-  if(parsed.users && !parsed.users.find(u=>u.username==='luis'))
-    parsed.users.unshift({ username:'luis', password:'19112223', role:'founder', muted:false, mutedUntil:null });
-  if(!parsed.videos || parsed.videos.length===0) parsed.videos = DEFAULT_DB.videos;
-  if(!parsed.customProjects) parsed.customProjects = [];
-  if(!parsed.admMessages) parsed.admMessages = [];
-  DB = {...DEFAULT_DB, ...parsed};
+// ── mergeDB: funde dados da nuvem com os padrões locais ───────
+function mergeDB(raw) {
+  if(!raw || typeof raw !== 'object') return false;
+  if(!raw.users || !raw.users.length) raw.users = [];
+  if(!raw.users.find(u => u.username === 'luis'))
+    raw.users.unshift({ username:'luis', password:'19112223', role:'founder', muted:false, mutedUntil:null });
+  if(!raw.videos  || !raw.videos.length)  raw.videos  = DEFAULT_DB.videos;
+  ['messages','admMessages','feedbacks','activityLog','chatLog','activities','customProjects']
+    .forEach(k => { if(!raw[k]) raw[k] = []; });
+  DB = raw;
+  return true;
 }
 
-// ── Local save / load ─────────────────────────────────────────
+// ── Local cache ───────────────────────────────────────────────
 function saveLocal() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(DB)); } catch(e){}
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(DB)); } catch(e) {}
 }
 function loadLocal() {
   try {
     const d = localStorage.getItem(STORE_KEY);
     if(d) mergeDB(JSON.parse(d));
-  } catch(e){}
+  } catch(e) {}
 }
 
-// ── Online sync using JSONBin.io (free tier) ──────────────────
-// We use a shared public bin so ALL users see each other's data.
-// The bin ID is stored in localStorage; first user creates the bin.
-async function onlinePull() {
-  if(!syncBinId) { await onlineCreateBin(); return; }
+// ── Payload: strip base64 images before sending to cloud ─────
+function cloudPayload() {
+  const body = JSON.parse(JSON.stringify(DB));
+  if(body.customProjects)
+    body.customProjects = body.customProjects.map(p =>
+      ({ ...p, src: p.src && p.src.startsWith('data:') ? '' : (p.src || '') })
+    );
+  return body;
+}
+
+// ── JSONBin push ─────────────────────────────────────────────
+async function cloudPush() {
+  if(_pushing) return;
+  _pushing = true;
   try {
-    const r = await fetch(`${JSONBIN_API}/${syncBinId}/latest`, {
-      headers: { 'X-Master-Key': JSONBIN_KEY }
+    if(!JB_BIN_ID) {
+      // Cria o bin na primeira vez
+      const r = await fetch('https://api.jsonbin.io/v3/b', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'X-Master-Key': JB_KEY, 'X-Bin-Name':'FisicaLab', 'X-Bin-Private':'false' },
+        body: JSON.stringify(cloudPayload())
+      });
+      if(r.ok) {
+        const j = await r.json();
+        JB_BIN_ID = j?.metadata?.id || '';
+        if(JB_BIN_ID) localStorage.setItem(JB_BIN_KEY, JB_BIN_ID);
+      }
+    } else {
+      await fetch(`https://api.jsonbin.io/v3/b/${JB_BIN_ID}`, {
+        method: 'PUT',
+        headers: { 'Content-Type':'application/json', 'X-Master-Key': JB_KEY },
+        body: JSON.stringify(cloudPayload())
+      });
+    }
+  } catch(e) {}
+  _pushing = false;
+}
+
+// ── JSONBin pull ─────────────────────────────────────────────
+async function cloudPull() {
+  if(!JB_BIN_ID) return;
+  try {
+    const r = await fetch(`https://api.jsonbin.io/v3/b/${JB_BIN_ID}/latest`, {
+      headers: { 'X-Master-Key': JB_KEY }
     });
     if(!r.ok) return;
     const j = await r.json();
-    if(j && j.record) {
+    if(j?.record?.users) {
       mergeDB(j.record);
       saveLocal();
-      updateUI(); updateStats(); renderChat(); renderFeedbacks();
-      showSyncStatus('✅ Dados sincronizados!', '#00ff88');
-    }
-  } catch(e) { showSyncStatus('⚠️ Sem conexão (modo local)', '#ffd700'); }
-}
-
-async function onlinePush() {
-  if(!syncBinId) { await onlineCreateBin(); return; }
-  try {
-    const body = JSON.parse(JSON.stringify(DB));
-    // strip large base64 images from cloud (save only metadata)
-    if(body.customProjects) {
-      body.customProjects = body.customProjects.map(p=>({
-        ...p,
-        src: p.src && p.src.startsWith('data:') ? '[local-file]' : p.src
-      }));
-    }
-    await fetch(`${JSONBIN_API}/${syncBinId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type':'application/json', 'X-Master-Key': JSONBIN_KEY },
-      body: JSON.stringify(body)
-    });
-    showSyncStatus('☁️ Salvo online!', '#00f5ff');
-  } catch(e) { showSyncStatus('⚠️ Falha ao salvar online', '#ff6b35'); }
-}
-
-async function onlineCreateBin() {
-  try {
-    const r = await fetch(JSONBIN_API, {
-      method: 'POST',
-      headers: { 'Content-Type':'application/json', 'X-Master-Key': JSONBIN_KEY, 'X-Bin-Name':'FisicaLab' },
-      body: JSON.stringify(DB)
-    });
-    if(!r.ok) return;
-    const j = await r.json();
-    if(j && j.metadata && j.metadata.id) {
-      syncBinId = j.metadata.id;
-      localStorage.setItem(BIN_ID_KEY, syncBinId);
-      showSyncStatus('☁️ Armazenamento online criado!', '#00ff88');
+      // Atualiza UI sem deslogar o usuário atual
+      const me = currentUser ? DB.users.find(u => u.username === currentUser.username) : null;
+      if(me) currentUser = me;
+      updateUI(); updateStats();
+      const active = id => document.getElementById('section-'+id)?.classList.contains('active');
+      if(active('chat'))     renderChat();
+      if(active('feedback')) renderFeedbacks();
+      if(active('adm'))      renderAdmPanel();
     }
   } catch(e) {}
 }
 
-function showSyncStatus(msg, color) {
-  const el = document.getElementById('sync-status');
-  if(el) { el.textContent = msg; el.style.color = color; }
-}
-
-// ── saveDB: local + debounced online push ─────────────────────
-let pushTimer = null;
+// ── saveDB: local imediato + push na nuvem (sem delay) ───────
 function saveDB() {
   saveLocal();
-  clearTimeout(pushTimer);
-  pushTimer = setTimeout(()=> onlinePush(), 1500);
+  cloudPush(); // imediato — garante que novos usuários apareçam para todos
 }
 
-// ── Initial load: local first, then pull from cloud ───────────
+// ── Boot: carrega local → puxa da nuvem ──────────────────────
 loadLocal();
-// Restore session if user was previously logged in
-if(window._pendingSession) {
-  const su = DB.users.find(u=>u.username===window._pendingSession);
-  if(su) currentUser = su;
-  delete window._pendingSession;
-}
-// Pull online data shortly after page load (non-blocking)
-setTimeout(()=> onlinePull(), 1200);
-// Re-sync every 30 seconds to pick up other users' changes
-setInterval(()=> onlinePull(), 30000);
+setTimeout(() => cloudPull(), 800);          // pull inicial
+setInterval(() => cloudPull(), 15000);       // sincroniza a cada 15s
 
 // ============================================================
 // AUTH
